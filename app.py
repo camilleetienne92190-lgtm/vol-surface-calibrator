@@ -237,11 +237,10 @@ with tab1:
             mode="markers",
             marker=dict(
                 size=4,
-                color=df["implied_vol"] * 100,
+                color=df["implied_vol"],
                 colorscale="Plasma",
-                colorbar=dict(title="IV (%)", tickfont=dict(color="white"),
-                              titlefont=dict(color="white")),
-                opacity=0.88,
+                opacity=0.85,
+                showscale=True,
             ),
             text=[
                 f"Strike: {r.strike:.0f}<br>DTE: {r.days_to_expiry}d"

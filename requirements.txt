@@ -4,4 +4,4 @@ pandas
 matplotlib
 yfinance
 streamlit
-plotly
+plotly==5.18.0
