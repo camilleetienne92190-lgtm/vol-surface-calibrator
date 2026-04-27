@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from data.fetch_chain import fetch_option_chain, load_cached_csv
 from calibration.svi import calibrate_slice
 from surface.arbitrage_check import check_calendar, check_butterfly
-from backtest.delta_hedge import run_backtest, summary_stats
+from backtest.delta_hedge import run_backtest
 
 # ── Page config ────────────────────────────────────────────────────────────────
 
@@ -634,119 +634,154 @@ with tab4:
 
 with tab5:
     st.subheader("Delta-Hedge Backtest")
-    st.markdown(
-        "> **What this P&L represents:** We simulate buying an option and re-hedging its "
-        "delta exposure daily. Positive P&L means the option was *cheap* — realized vol exceeded "
-        "implied vol, generating gamma profits that outpaced theta decay. "
-        "Negative P&L means we overpaid for vol."
-    )
     st.markdown("---")
 
-    bt_col, res_col5 = st.columns([1, 2])
-
-    with bt_col:
-        st.markdown("#### Parameters")
+    # ── Row 1: core parameters ─────────────────────────────────────────────
+    r1c1, r1c2, r1c3 = st.columns([1, 2, 2])
+    with r1c1:
         bt_ticker = st.text_input("Ticker", value=ticker, key="bt_ticker").upper().strip()
-        bt_K      = st.number_input("Strike K", value=_spot_safe, min_value=1.0,
-                                     step=5.0, format="%.0f", key="bt_K")
-        bt_sigma  = st.slider("Implied vol (hedging)", 0.05, 1.5, 0.20,
-                               step=0.01, format="%.2f", key="bt_sigma")
-        bt_r      = st.number_input("Risk-free rate", value=rf_rate,
-                                     step=0.005, format="%.4f", key="bt_r")
-        bt_opt    = st.radio("Option type", ["call", "put"], horizontal=True, key="bt_opt")
-        bt_start  = st.date_input("Start date",
-                                   value=datetime.today() - timedelta(days=90),
-                                   max_value=datetime.today() - timedelta(days=10),
-                                   key="bt_start")
-        bt_end    = st.date_input("End date", value=datetime.today(),
-                                   max_value=datetime.today(), key="bt_end")
-        bt_freq   = st.selectbox("Rebalance frequency", [1, 2, 5], index=0,
-                                  format_func=lambda x: f"Every {x} day(s)", key="bt_freq")
-        run_bt    = st.button("Run Backtest", type="primary", use_container_width=True)
+    with r1c2:
+        bt_expiry_days = st.slider(
+            "Option lifetime (calendar days)", 7, 90, 30, step=1, key="bt_expiry"
+        )
+    with r1c3:
+        bt_sigma_mode = st.selectbox(
+            "Volatility for hedging",
+            ["Realised vol (auto)", "Fixed: 18%"],
+            index=0,
+            key="bt_sigma_mode",
+        )
 
-    with res_col5:
-        if run_bt:
-            bt_error = None
-            price_series = None
+    # ── Row 2: start date ──────────────────────────────────────────────────
+    r2c1, r2c2 = st.columns([1, 3])
+    with r2c1:
+        bt_start = st.date_input(
+            "Backtest start date",
+            value=datetime.today().date() - timedelta(days=365),
+            max_value=datetime.today().date() - timedelta(days=bt_expiry_days + 5),
+            key="bt_start",
+        )
 
-            with st.spinner("Fetching historical prices..."):
-                try:
-                    import yfinance as yf
-                    raw = yf.Ticker(bt_ticker).history(
-                        start=bt_start.strftime("%Y-%m-%d"),
-                        end=bt_end.strftime("%Y-%m-%d"),
-                    )
-                    if raw.empty:
-                        bt_error = f"No historical data for {bt_ticker} in this date range."
-                    else:
-                        price_series = raw["Close"].dropna()
-                        if len(price_series) < 5:
-                            bt_error = "Need at least 5 trading days of data in this range."
-                except Exception as exc:
-                    bt_error = f"Failed to fetch prices: {exc}"
+    # ── Row 3: run button ──────────────────────────────────────────────────
+    run_bt = st.button("Run Backtest", type="primary", key="run_bt")
 
-            if bt_error is None:
-                T0_yr = (bt_end - bt_start).days / 365.0
-                with st.spinner("Running delta-hedge simulation..."):
-                    try:
-                        result = run_backtest(
-                            price_series, bt_K, T0_yr, bt_sigma, bt_r, bt_opt, bt_freq
-                        )
-                        st.session_state.backtest_result = (result, summary_stats(result))
-                    except Exception as exc:
-                        bt_error = f"Backtest error: {exc}"
+    bt_error = None
 
-            if bt_error:
-                st.error(bt_error)
+    if run_bt:
+        sigma_fixed = None if bt_sigma_mode.startswith("Realised") else 0.18
+        with st.spinner(f"Fetching {bt_ticker} history and running simulation..."):
+            try:
+                bt_result = run_backtest(
+                    ticker=bt_ticker,
+                    start_date=bt_start.strftime("%Y-%m-%d"),
+                    expiry_days=bt_expiry_days,
+                    sigma=sigma_fixed,
+                    r=rf_rate,
+                )
+                st.session_state.backtest_result = bt_result
+            except (RuntimeError, ValueError) as exc:
+                bt_error = str(exc)
+            except Exception as exc:
+                bt_error = f"Unexpected error: {exc}"
 
-        if st.session_state.backtest_result is not None:
-            result, stats = st.session_state.backtest_result
+        if bt_error:
+            st.error(bt_error)
 
-            s1, s2, s3, s4 = st.columns(4)
-            s1.metric("Total P&L",     f"${stats['total_pnl']:+.2f}")
-            s2.metric("Sharpe (ann.)", f"{stats['sharpe']:.3f}")
-            s3.metric("Max Drawdown",  f"${stats['max_drawdown']:.2f}")
-            s4.metric("Win Rate",      f"{stats['win_rate']:.1%}")
+    if st.session_state.backtest_result is not None and bt_error is None:
+        res   = st.session_state.backtest_result
+        stats = res["stats"]
+        K_bt  = res["strike"]
 
-            fig_bt = go.Figure()
-            fig_bt.add_trace(go.Scatter(
-                x=result.index, y=result["cumulative_pnl"],
-                mode="lines", name="Cumulative P&L",
-                line=dict(color="#00c3ff", width=2),
-                fill="tozeroy", fillcolor="rgba(0,195,255,0.08)",
-            ))
-            fig_bt.add_trace(go.Scatter(
-                x=result.index, y=result["total_pnl"],
-                mode="lines", name="Daily P&L",
-                line=dict(color="#FFD700", width=1, dash="dot"),
-                opacity=0.7,
-            ))
-            fig_bt.add_hline(y=0, line_color="#444444", line_width=1)
-            fig_bt.update_layout(**dark_layout(
-                title=f"Delta-Hedge P&L  {bt_ticker} {bt_opt.upper()} K={bt_K:.0f} sigma={bt_sigma:.0%}",
-                xaxis_title="Date",
-                yaxis_title="P&L ($)",
-                legend=dict(bgcolor="#1a1d25", bordercolor="#444444"),
-                height=400,
-            ))
-            st.plotly_chart(fig_bt, use_container_width=True)
+        # ── Stats row ─────────────────────────────────────────────────────
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("Total P&L",        f"${stats['total_pnl']:+.2f}")
+        m2.metric("Sharpe (ann.)",    f"{stats['sharpe_ratio']:.3f}")
+        m3.metric("Max Drawdown",     f"${stats['max_drawdown']:.2f}")
+        m4.metric("Win Rate",         f"{stats['win_rate']:.1%}")
+        m5.metric("Realised vol",     f"{stats['realised_vol']:.1%}")
 
-            with st.expander("Delta path + spot"):
-                fig_d = go.Figure()
-                fig_d.add_trace(go.Scatter(x=result.index, y=result["delta"],
-                                            mode="lines", name="Delta",
-                                            line=dict(color="#9d4edd", width=1.5)))
-                fig_d.add_trace(go.Scatter(x=result.index, y=result["spot"],
-                                            mode="lines", name="Spot",
-                                            line=dict(color="#FFD700", width=1.2),
-                                            yaxis="y2"))
-                fig_d.update_layout(**dark_layout(
-                    title="Delta & Spot",
-                    yaxis_title="Delta",
-                    yaxis2=dict(title="Spot ($)", overlaying="y", side="right", **_AXIS),
-                    legend=dict(bgcolor="#1a1d25"),
-                    height=300,
-                ))
-                st.plotly_chart(fig_d, use_container_width=True)
-        else:
-            st.info("Configure parameters and click **Run Backtest** to start.")
+        st.markdown("---")
+
+        # ── Price chart with strike line ───────────────────────────────────
+        fig_price = go.Figure()
+        fig_price.add_trace(go.Scatter(
+            x=res["price_series"].index,
+            y=res["price_series"].values,
+            mode="lines", name="Spot",
+            line=dict(color="#FFD700", width=2),
+        ))
+        fig_price.add_hline(
+            y=K_bt, line_color="#ff4b4b", line_width=1.5, line_dash="dash",
+            annotation_text=f"Strike K={K_bt:.0f}",
+            annotation_font_color="#ff4b4b",
+        )
+        fig_price.update_layout(**dark_layout(
+            title=f"{bt_ticker} Spot vs Strike",
+            xaxis_title="Date", yaxis_title="Price ($)", height=300,
+        ))
+        st.plotly_chart(fig_price, use_container_width=True)
+
+        # ── P&L chart (green above zero, red below) ────────────────────────
+        pnl_vals  = res["pnl_series"].values
+        pnl_dates = res["pnl_series"].index
+        is_positive = float(pnl_vals[-1]) >= 0
+        pnl_color     = "#2ecc71" if is_positive else "#e74c3c"
+        pnl_fillcolor = "rgba(46,204,113,0.10)" if is_positive else "rgba(231,76,60,0.10)"
+
+        fig_pnl = go.Figure()
+        fig_pnl.add_trace(go.Scatter(
+            x=pnl_dates, y=pnl_vals,
+            mode="lines", name="Cumulative P&L",
+            line=dict(color=pnl_color, width=2),
+            fill="tozeroy",
+            fillcolor=pnl_fillcolor,
+        ))
+        fig_pnl.add_hline(y=0, line_color="#555555", line_width=1)
+        fig_pnl.update_layout(**dark_layout(
+            title=f"Cumulative P&L — Short ATM Call K={K_bt:.0f}  "
+                  f"sigma_entry={stats['implied_vol_entry']:.1%}  realised={stats['realised_vol']:.1%}",
+            xaxis_title="Date", yaxis_title="P&L ($)", height=320,
+        ))
+        st.plotly_chart(fig_pnl, use_container_width=True)
+
+        # ── Delta chart ────────────────────────────────────────────────────
+        fig_delta = go.Figure()
+        fig_delta.add_trace(go.Scatter(
+            x=res["delta_series"].index,
+            y=res["delta_series"].values,
+            mode="lines", name="Delta (hedge ratio)",
+            line=dict(color="#9d4edd", width=1.5),
+        ))
+        fig_delta.update_layout(**dark_layout(
+            title="Delta Path (0 = no hedge, 1 = fully hedged)",
+            xaxis_title="Date", yaxis_title="Delta",
+            yaxis=dict(range=[0, 1], **_AXIS),
+            height=260,
+        ))
+        st.plotly_chart(fig_delta, use_container_width=True)
+
+        # ── Explanation ────────────────────────────────────────────────────
+        vol_edge = stats["realised_vol"] - stats["implied_vol_entry"]
+        direction = "above" if vol_edge > 0 else "below"
+        st.info(
+            f"**Strategy:** SHORT 1 ATM call (K={K_bt:.0f}) + daily delta hedge over "
+            f"{bt_expiry_days} calendar days.  \n"
+            f"**Vol edge:** Realised vol ({stats['realised_vol']:.1%}) was {abs(vol_edge):.1%} "
+            f"**{direction}** implied ({stats['implied_vol_entry']:.1%}).  \n"
+            f"Positive P&L = implied vol was expensive (you collected more premium than gamma cost). "
+            f"Negative P&L = realised vol exceeded implied — gamma losses exceeded premium collected."
+        )
+
+        # ── Trade details expander ─────────────────────────────────────────
+        with st.expander("Trade details"):
+            detail_df = pd.DataFrame({
+                "Date":         res["daily_pnl"].index,
+                "Spot":         res["price_series"].values,
+                "Delta":        res["delta_series"].values.round(4),
+                "Option Value": res["option_values"].values.round(4),
+                "Daily P&L":    res["daily_pnl"].values.round(4),
+                "Cum. P&L":     res["pnl_series"].values.round(4),
+            })
+            st.dataframe(detail_df, use_container_width=True, hide_index=True)
+    elif not run_bt:
+        st.info("Set parameters above and click **Run Backtest** to simulate the strategy.")

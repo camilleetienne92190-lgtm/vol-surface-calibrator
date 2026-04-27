@@ -1,30 +1,24 @@
 """
 Delta-hedge backtest engine — Week 4.
 
-Strategy: buy a call option, delta-hedge daily using the spot, track P&L.
-P&L breakdown: theta decay vs. gamma scalping (realized vs. implied vol spread).
-
-Usage (once implemented):
-    from backtest.delta_hedge import run_backtest
-    results = run_backtest("SPY", "2024-01-05", strike=480, expiry="2024-02-16")
+Strategy: SHORT one ATM call, delta-hedge daily with the underlying.
+P&L logic:
+  option_pnl  = V(t-1) - V(t)        (short call profits when vol declines / time passes)
+  hedge_pnl   = delta(t-1) * (S(t) - S(t-1))  (long delta hedge)
+  daily_pnl   = option_pnl + hedge_pnl
 """
 
 from __future__ import annotations
+
 import numpy as np
 import pandas as pd
+from datetime import datetime, timedelta
 from scipy.stats import norm
 
 
-# ── Black-Scholes Greeks (self-contained, no circular import) ─────────────────
+# ── Black-Scholes helpers (self-contained, no circular import) ────────────────
 
-def _bs_delta(S: float, K: float, T: float, r: float, sigma: float, opt: str) -> float:
-    if T <= 0 or sigma <= 0:
-        return 1.0 if (opt == "call" and S > K) else 0.0
-    d1 = (np.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
-    return norm.cdf(d1) if opt == "call" else norm.cdf(d1) - 1.0
-
-
-def _bs_price(S: float, K: float, T: float, r: float, sigma: float, opt: str) -> float:
+def _bs_price(S: float, K: float, T: float, r: float, sigma: float, opt: str = "call") -> float:
     if T <= 0 or sigma <= 0:
         return max(S - K, 0.0) if opt == "call" else max(K - S, 0.0)
     d1 = (np.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
@@ -34,82 +28,141 @@ def _bs_price(S: float, K: float, T: float, r: float, sigma: float, opt: str) ->
     return K * np.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
 
 
-# ── Backtest engine ────────────────────────────────────────────────────────────
+def _bs_delta(S: float, K: float, T: float, r: float, sigma: float, opt: str = "call") -> float:
+    if T <= 0 or sigma <= 0:
+        return 1.0 if (opt == "call" and S > K) else 0.0
+    d1 = (np.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
+    return norm.cdf(d1) if opt == "call" else norm.cdf(d1) - 1.0
+
+
+# ── Backtest engine ───────────────────────────────────────────────────────────
 
 def run_backtest(
-    price_series: pd.Series,
-    K: float,
-    T0: float,
-    sigma_implied: float,
+    ticker: str = "SPY",
+    start_date: str | None = None,
+    expiry_days: int = 30,
+    sigma: float | None = None,
     r: float = 0.05,
-    opt: str = "call",
-    hedge_freq: int = 1,
-) -> pd.DataFrame:
+) -> dict:
     """
-    Run a delta-hedge backtest on a pre-loaded price series.
+    Simulate shorting an ATM call and delta-hedging daily.
 
     Parameters
     ----------
-    price_series    : pd.Series of daily closing prices, indexed by date
-    K               : option strike
-    T0              : initial time to expiry in years
-    sigma_implied   : implied vol used to compute delta (constant for now)
-    r               : risk-free rate
-    opt             : 'call' or 'put'
-    hedge_freq      : rebalance every N days (default daily)
+    ticker       : underlying ticker (fetched via yfinance)
+    start_date   : YYYY-MM-DD string; defaults to 1 year ago
+    expiry_days  : option lifetime in calendar days
+    sigma        : fixed implied vol; if None, use realised vol of first 5 days
+    r            : risk-free rate (continuous)
 
     Returns
     -------
-    pd.DataFrame with columns: date, S, delta, option_pnl, hedge_pnl, total_pnl
+    dict with keys:
+        pnl_series       pd.Series  cumulative P&L indexed by date
+        daily_pnl        pd.Series  daily P&L
+        delta_series     pd.Series  delta (hedge ratio) each day
+        option_values    pd.Series  BS option value each day
+        price_series     pd.Series  underlying closing prices
+        strike           float      option strike used
+        stats            dict       summary statistics
     """
-    prices = price_series.values
-    dates = price_series.index
-    n = len(prices)
-    dt = 1 / 252.0
+    import yfinance as yf
 
-    records = []
-    delta_prev = 0.0
-    option_value_prev = _bs_price(prices[0], K, T0, r, sigma_implied, opt)
-    hedge_cash = 0.0
+    # ── Date setup ────────────────────────────────────────────────────────────
+    if start_date is None:
+        t0 = datetime.today() - timedelta(days=365)
+    else:
+        t0 = datetime.strptime(start_date, "%Y-%m-%d")
+
+    # Fetch enough history: expiry_days of data + a small buffer
+    end_dt = t0 + timedelta(days=expiry_days + 10)
+    if end_dt > datetime.today():
+        end_dt = datetime.today()
+
+    raw = yf.Ticker(ticker).history(
+        start=t0.strftime("%Y-%m-%d"),
+        end=end_dt.strftime("%Y-%m-%d"),
+    )
+    if raw.empty:
+        raise RuntimeError(f"No historical data for {ticker} between {t0.date()} and {end_dt.date()}")
+
+    prices = raw["Close"].dropna()
+    if len(prices) < 5:
+        raise ValueError(f"Only {len(prices)} trading days in range — need at least 5.")
+
+    # ── Strike: ATM rounded to nearest 5 ─────────────────────────────────────
+    spot_0 = float(prices.iloc[0])
+    K = round(spot_0 / 5) * 5
+
+    # ── Sigma: realised vol from first 5 days if not provided ────────────────
+    if sigma is None:
+        log_rets = np.log(prices.iloc[1:6] / prices.iloc[0:5].values)
+        sigma = max(float(log_rets.std() * np.sqrt(252)), 0.001)
+    implied_vol_entry = sigma
+
+    # ── Initial option value (collect premium — SHORT the call) ──────────────
+    T0 = expiry_days / 365.0
+    initial_premium = _bs_price(spot_0, K, T0, r, sigma, "call")
+
+    # ── Daily simulation ──────────────────────────────────────────────────────
+    dt = 1.0 / 252.0
+    n = len(prices)
+
+    dates         = prices.index
+    spot_arr      = prices.values
+    opt_vals      = np.zeros(n)
+    delta_arr     = np.zeros(n)
+    daily_pnl_arr = np.zeros(n)
 
     for i in range(n):
-        T = max(T0 - i * dt, 1e-6)
-        S = prices[i]
-        option_value = _bs_price(S, K, T, r, sigma_implied, opt)
+        T_rem = max(T0 - i * dt, 1e-6)
+        S = spot_arr[i]
+        opt_vals[i] = _bs_price(S, K, T_rem, r, sigma, "call")
+        delta_arr[i] = _bs_delta(S, K, T_rem, r, sigma, "call")
 
-        if i % hedge_freq == 0:
-            delta = _bs_delta(S, K, T, r, sigma_implied, opt)
-            hedge_cash += (delta - delta_prev) * S  # cash spent on hedge
-            delta_prev = delta
+        if i > 0:
+            # Short call P&L: we sold the call, so we profit when value falls
+            option_pnl = opt_vals[i - 1] - opt_vals[i]
+            # Delta hedge P&L: we hold delta shares of the underlying (long)
+            hedge_pnl = delta_arr[i - 1] * (S - spot_arr[i - 1])
+            daily_pnl_arr[i] = option_pnl + hedge_pnl
 
-        option_pnl = option_value - option_value_prev if i > 0 else 0.0
-        hedge_pnl = delta_prev * (S - prices[i - 1]) if i > 0 else 0.0
+    daily_pnl   = pd.Series(daily_pnl_arr, index=dates)
+    pnl_series  = daily_pnl.cumsum()
+    delta_series = pd.Series(delta_arr, index=dates)
+    option_values = pd.Series(opt_vals, index=dates)
 
-        records.append(
-            {
-                "date": dates[i],
-                "spot": S,
-                "T": T,
-                "delta": delta_prev,
-                "option_value": option_value,
-                "option_pnl": option_pnl,
-                "hedge_pnl": hedge_pnl,
-                "total_pnl": option_pnl + hedge_pnl,
-            }
-        )
-        option_value_prev = option_value
+    # ── Stats ─────────────────────────────────────────────────────────────────
+    pnl_nonzero = daily_pnl.iloc[1:]  # day 0 is always 0
+    realised_vol = float(
+        np.log(prices / prices.shift(1)).dropna().std() * np.sqrt(252)
+    )
+    total_pnl    = float(pnl_series.iloc[-1])
+    sharpe       = (
+        float(pnl_nonzero.mean() / pnl_nonzero.std() * np.sqrt(252))
+        if pnl_nonzero.std() > 0 else 0.0
+    )
+    running_max  = pnl_series.cummax()
+    max_drawdown = float((running_max - pnl_series).max())
+    win_rate     = float((pnl_nonzero > 0).mean())
 
-    result = pd.DataFrame(records).set_index("date")
-    result["cumulative_pnl"] = result["total_pnl"].cumsum()
-    return result
+    stats = {
+        "total_pnl":             round(total_pnl, 4),
+        "sharpe_ratio":          round(sharpe, 4),
+        "max_drawdown":          round(max_drawdown, 4),
+        "win_rate":              round(win_rate, 4),
+        "nb_rebalances":         n - 1,
+        "initial_option_premium": round(initial_premium, 4),
+        "realised_vol":          round(realised_vol, 4),
+        "implied_vol_entry":     round(implied_vol_entry, 4),
+    }
 
-
-def summary_stats(results: pd.DataFrame) -> dict:
-    pnl = results["total_pnl"]
     return {
-        "total_pnl": pnl.sum(),
-        "sharpe": pnl.mean() / pnl.std() * np.sqrt(252) if pnl.std() > 0 else 0.0,
-        "max_drawdown": (results["cumulative_pnl"].cummax() - results["cumulative_pnl"]).max(),
-        "win_rate": (pnl > 0).mean(),
-        "n_days": len(results),
+        "pnl_series":    pnl_series,
+        "daily_pnl":     daily_pnl,
+        "delta_series":  delta_series,
+        "option_values": option_values,
+        "price_series":  prices,
+        "strike":        K,
+        "stats":         stats,
     }
