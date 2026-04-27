@@ -141,7 +141,7 @@ def fetch_chain_cached(ticker: str, r: float = 0.05):
         ts       = f"cached snapshot · {mtime} (live error: {live_error})"
         return df_cached, spot_cached, ts, False
 
-    return None, None, f"Live fetch failed ({live_error}) and no CSV snapshot found for {ticker}", False
+    return None, None, f"Live fetch failed ({live_error}). Option chain data is cached for SPY only.", False
 
 
 # ── Session state — initialise ALL keys before any tab logic ───────────────────
@@ -680,9 +680,15 @@ with tab5:
                 )
                 st.session_state.backtest_result = bt_result
             except (RuntimeError, ValueError) as exc:
-                bt_error = str(exc)
+                bt_error = (
+                    f"Historical price data unavailable for {bt_ticker}. "
+                    f"Note: option chain data (Tabs 1-3) is cached for SPY only."
+                )
             except Exception as exc:
-                bt_error = f"Unexpected error: {exc}"
+                bt_error = (
+                    f"Historical price data unavailable for {bt_ticker}. "
+                    f"Note: option chain data (Tabs 1-3) is cached for SPY only."
+                )
 
         if bt_error:
             st.error(bt_error)
