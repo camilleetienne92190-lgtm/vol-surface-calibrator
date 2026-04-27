@@ -34,9 +34,18 @@ jobs:
         timeout-minutes: 2
 
       - name: Commit and push
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+          git remote set-url origin https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git
+          git status
           git add data/SPY_chain.csv
-          git diff --staged --quiet && echo "No changes" || git commit -m "chore: refresh SPY_chain.csv [skip ci]" && git push
+          git status
+          if git diff --staged --quiet; then
+            echo "No changes to commit — CSV unchanged"
+          else
+            git commit -m "chore: refresh SPY_chain.csv [skip ci]"
+            git push origin main --verbose
+          fi
