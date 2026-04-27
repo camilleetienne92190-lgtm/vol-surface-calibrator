@@ -5,6 +5,9 @@ on:
     - cron: '0 18 * * 5'  # Every Friday at 18:00 UTC (after US market close)
   workflow_dispatch:        # Allow manual trigger from GitHub UI
 
+permissions:
+  contents: write
+
 jobs:
   refresh:
     runs-on: ubuntu-latest
