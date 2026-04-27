@@ -214,7 +214,6 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 # ══════════════════════════════════════════════════════════════════════════════
 
 with tab1:
-    st.write("Tab 1 loaded")
 
     if not _data_ok:
         st.warning("No data available. Check the ticker in the sidebar.")
@@ -303,7 +302,6 @@ with tab1:
 # ══════════════════════════════════════════════════════════════════════════════
 
 with tab2:
-    st.write("Tab 2 loaded")
     st.subheader("SVI Calibration per Maturity Slice")
     st.caption("Fits  w(k) = a + b(rho(k-m) + sqrt((k-m)^2+sigma^2))  "
                "via differential evolution + L-BFGS-B polish.")
@@ -413,7 +411,6 @@ with tab2:
 # ══════════════════════════════════════════════════════════════════════════════
 
 with tab3:
-    st.write("Tab 3 loaded")
     st.subheader("Static Arbitrage Diagnostics")
 
     if not st.session_state.fits:
@@ -550,7 +547,6 @@ with tab3:
 # ══════════════════════════════════════════════════════════════════════════════
 
 with tab4:
-    st.write("Tab 4 loaded")
     st.subheader("Black-Scholes vs SVI Pricer")
 
     in_col, res_col = st.columns([1, 2])
@@ -637,7 +633,6 @@ with tab4:
 # ══════════════════════════════════════════════════════════════════════════════
 
 with tab5:
-    st.write("Tab 5 loaded")
     st.subheader("Delta-Hedge Backtest")
     st.markdown(
         "> **What this P&L represents:** We simulate buying an option and re-hedging its "
