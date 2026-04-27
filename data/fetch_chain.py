@@ -181,9 +181,9 @@ if __name__ == "__main__":
         sys.exit(1)
 
     if df.empty:
-        print("[WARNING] DataFrame is empty — nothing to save.")
-        sys.exit(0)
+        print("[ERROR] DataFrame is empty — nothing to save.")
+        sys.exit(1)
 
-    print(df.head(10).to_string(index=False))
     out = Path(__file__).parent / f"{ticker}_chain.csv"
     save_to_csv(df, str(out))
+    print(f"Saved {len(df)} options to {out}")

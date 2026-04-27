@@ -1,0 +1,35 @@
+name: Refresh SPY Data
+
+on:
+  schedule:
+    - cron: '0 18 * * 5'  # Every Friday at 18:00 UTC (after US market close)
+  workflow_dispatch:        # Allow manual trigger from GitHub UI
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install yfinance pandas scipy numpy
+
+      - name: Fetch fresh SPY chain
+        run: python data/fetch_chain.py
+
+      - name: Commit and push if data changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/SPY_chain.csv
+          git diff --staged --quiet || git commit -m "chore: refresh SPY_chain.csv [skip ci]"
+          git push
