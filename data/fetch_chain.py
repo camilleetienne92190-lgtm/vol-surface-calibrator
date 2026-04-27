@@ -173,25 +173,12 @@ def save_to_csv(df: pd.DataFrame, filename: str) -> None:
 # ── CLI entry point ───────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    import signal
-
-    def _timeout_handler(signum, frame):
-        raise TimeoutError("yfinance timeout")
-
     ticker = sys.argv[1] if len(sys.argv) > 1 else "SPY"
-
-    signal.signal(signal.SIGALRM, _timeout_handler)
-    signal.alarm(60)
     try:
         df = fetch_option_chain(ticker)
-    except TimeoutError:
-        print("Fetch timed out or rate-limited — keeping existing SPY_chain.csv")
-        sys.exit(0)
     except RuntimeError as exc:
         print(f"[ERROR] {exc}")
         sys.exit(1)
-    finally:
-        signal.alarm(0)
 
     if df.empty:
         print("[ERROR] DataFrame is empty — nothing to save.")
