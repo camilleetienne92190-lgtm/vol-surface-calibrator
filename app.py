@@ -16,7 +16,7 @@ from scipy.stats import norm
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from data.fetch_chain import fetch_option_chain
+from data.fetch_chain import fetch_option_chain, load_cached_csv
 from calibration.svi import calibrate_slice
 from surface.arbitrage_check import check_calendar, check_butterfly
 from backtest.delta_hedge import run_backtest, summary_stats
@@ -113,23 +113,35 @@ def svi_vol_at(fits: dict, K: float, S: float, T_days: float):
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_chain_cached(ticker: str, r: float = 0.05):
+    """
+    Returns (df, spot, timestamp, is_live).
+    is_live=False means we fell back to a committed CSV snapshot.
+    """
+    # ── Attempt live fetch ────────────────────────────────────────────────────
+    live_error: str | None = None
     try:
         import yfinance as yf
         tk   = yf.Ticker(ticker)
         hist = tk.history(period="1d")
         if hist.empty:
-            return None, None, f"No price data for {ticker}"
+            raise RuntimeError(f"No price data for {ticker}")
         spot = float(hist["Close"].iloc[-1])
+        df   = fetch_option_chain(ticker, r=r)
+        ts   = datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")
+        return df, spot, ts, True
     except Exception as exc:
-        return None, None, str(exc)
-    try:
-        df = fetch_option_chain(ticker, r=r)
-        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")
-        return df, spot, ts
-    except SystemExit:
-        return None, None, "Option chain fetch failed (yfinance)"
-    except Exception as exc:
-        return None, None, str(exc)
+        live_error = str(exc)
+
+    # ── Fallback: load committed CSV snapshot ─────────────────────────────────
+    data_dir = Path(__file__).parent / "data"
+    df_cached, spot_cached = load_cached_csv(ticker, data_dir)
+    if df_cached is not None:
+        csv_path = data_dir / f"{ticker}_chain.csv"
+        mtime    = datetime.fromtimestamp(csv_path.stat().st_mtime).strftime("%Y-%m-%d")
+        ts       = f"cached snapshot · {mtime} (live error: {live_error})"
+        return df_cached, spot_cached, ts, False
+
+    return None, None, f"Live fetch failed ({live_error}) and no CSV snapshot found for {ticker}", False
 
 
 # ── Session state — initialise ALL keys before any tab logic ───────────────────
@@ -167,14 +179,24 @@ st.title("Volatility Surface Calibrator")
 st.caption(f"Ticker: **{ticker}** · Risk-free rate: **{rf_rate:.1%}**")
 
 with st.spinner(f"Fetching option chain for **{ticker}**..."):
-    df, spot, fetch_ts = fetch_chain_cached(ticker, rf_rate)
+    df, spot, fetch_ts, is_live = fetch_chain_cached(ticker, rf_rate)
 
 _data_ok   = df is not None and not df.empty
 _spot_safe = float(spot) if spot else 500.0   # safe default for widget values
 
 if not _data_ok:
-    st.error(f"Could not load market data: {fetch_ts}. "
-             f"Check the ticker or try again — yfinance may be rate-limiting.")
+    st.error(
+        f"Could not load market data: {fetch_ts}  |  "
+        f"Check the ticker symbol or try again later."
+    )
+elif not is_live:
+    # Extract the date part from the timestamp for the banner
+    _cache_date = fetch_ts.split("·")[1].strip().split(" ")[0] if "·" in fetch_ts else "unknown"
+    st.warning(
+        f"Live data unavailable (yfinance rate limit on Streamlit Cloud). "
+        f"Showing cached data from **{_cache_date}**. "
+        f"Prices and Greeks are illustrative — not real-time."
+    )
 
 # ── Tabs ───────────────────────────────────────────────────────────────────────
 

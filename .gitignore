@@ -6,8 +6,7 @@ __pycache__/
 venv/
 .env
 
-# Generated data / plots (re-fetched at runtime)
-data/*.csv
+# Generated plots (re-rendered at runtime)
 plots/*.png
 plots/*.jpg
 
