@@ -28,6 +28,8 @@ jobs:
 
       - name: Fetch fresh SPY chain
         run: python data/fetch_chain.py
+        timeout-minutes: 2
+        continue-on-error: true
 
       - name: Commit and push if data changed
         run: |
