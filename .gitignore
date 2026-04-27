@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+.env
+
+# Generated data / plots (re-fetched at runtime)
+data/*.csv
+plots/*.png
+plots/*.jpg
+
+# Streamlit cache
+.streamlit/secrets.toml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDEs
+.vscode/
+.idea/
+*.egg-info/
+dist/
+build/
